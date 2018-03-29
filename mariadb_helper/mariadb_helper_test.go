@@ -198,8 +198,7 @@ var _ = Describe("MariaDBHelper", func() {
 			executable, args := fakeOs.RunCommandArgsForCall(0)
 			Expect(executable).To(Equal(dbConfig.UpgradePath))
 			Expect(args).To(Equal([]string{
-				fmt.Sprintf("-u%s", dbConfig.User),
-				fmt.Sprintf("-p%s", dbConfig.Password),
+				"--defaults-file=/var/vcap/jobs/mysql/config/mylogin.cnf",
 			}))
 		})
 
