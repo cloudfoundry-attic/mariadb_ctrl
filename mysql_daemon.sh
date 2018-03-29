@@ -24,7 +24,7 @@ case "$mode" in
 
   'status')
       echo "Getting status of mysql process (exit 0 == running)"
-      /var/vcap/packages/mariadb/support-files/mysql.server status
+      /var/vcap/packages/mariadb/support-files/mysql.server status --pid-file=/var/vcap/sys/run/mysql/mysql.pid
       ;;
 esac
 
