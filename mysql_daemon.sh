@@ -4,10 +4,11 @@ set -e
 
 mode=$1
 
+
 case "$mode" in
   'stop')
       echo "Stopping the cluster"
-      /var/vcap/packages/mariadb/support-files/mysql.server stop --pid-file=/var/vcap/sys/run/mysql/mysql.pid > /dev/null 2>&1  &
+      USER=vcap /var/vcap/packages/mariadb/support-files/mysql.server stop --pid-file=/var/vcap/sys/run/mysql/mysql.pid --user=vcap > /dev/null 2>&1
       ;;
 
   'bootstrap')
