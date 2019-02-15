@@ -4,25 +4,24 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
 	"io/ioutil"
 	"os"
-	"os/exec"
 
 	"code.cloudfoundry.org/lager"
 	"code.cloudfoundry.org/lager/lagertest"
 	"github.com/DATA-DOG/go-sqlmock"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gbytes"
-
 	"github.com/cloudfoundry/mariadb_ctrl/config"
 	"github.com/cloudfoundry/mariadb_ctrl/mariadb_helper"
 	"github.com/cloudfoundry/mariadb_ctrl/mariadb_helper/seeder"
 	"github.com/cloudfoundry/mariadb_ctrl/mariadb_helper/seeder/seederfakes"
 	"github.com/cloudfoundry/mariadb_ctrl/os_helper/os_helperfakes"
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gbytes"
 )
 
-var _ = Describe("GaleraDBHelper", func() {
+var _ = Describe("MariaDBHelper", func() {
 	const (
 		lastInsertId           = -1
 		rowsAffected           = 1
@@ -31,7 +30,7 @@ var _ = Describe("GaleraDBHelper", func() {
 	)
 
 	var (
-		helper     *mariadb_helper.GaleraDBHelper
+		helper     *mariadb_helper.MariaDBHelper
 		fakeOs     *os_helperfakes.FakeOsHelper
 		fakeSeeder *seederfakes.FakeSeeder
 		testLogger lagertest.TestLogger
@@ -45,7 +44,7 @@ var _ = Describe("GaleraDBHelper", func() {
 		var err error
 		fakeOs = new(os_helperfakes.FakeOsHelper)
 		fakeSeeder = new(seederfakes.FakeSeeder)
-		testLogger = *lagertest.NewTestLogger("db_helper")
+		testLogger = *lagertest.NewTestLogger("mariadb_helper")
 
 		fakeDB, mock, err = sqlmock.New()
 		Expect(err).ToNot(HaveOccurred())
@@ -72,6 +71,7 @@ var _ = Describe("GaleraDBHelper", func() {
 		ioutil.WriteFile(sqlFile2.Name(), []byte(fakeSupplementalQuery2), 755)
 
 		dbConfig = &config.DBHelper{
+			DaemonPath:  "/mysqld",
 			UpgradePath: "/mysql_upgrade",
 			User:        "user",
 			Password:    "password",
@@ -105,52 +105,51 @@ var _ = Describe("GaleraDBHelper", func() {
 	})
 
 	Describe("StartMysqldInStandAlone", func() {
-		BeforeEach(func() {
-			fakeOs.StartCommandStub = func(logFile string, executable string, args ...string) (cmd *exec.Cmd, e error) {
-				return exec.Command("stub"), nil
-			}
+
+		It("calls the mysql daemon with the command option", func() {
+			helper.StartMysqldInStandAlone()
+
+			Expect(fakeOs.RunCommandCallCount()).To(Equal(1))
+			executable, args := fakeOs.RunCommandArgsForCall(0)
+			Expect(executable).To(Equal("bash"))
+			Expect(args).To(Equal([]string{dbConfig.DaemonPath, "stand-alone"}))
 		})
 
-		It("start mysql in an upgrade mode and return an exec.Cmd value", func() {
-			options := []string{
-				"--defaults-file=/var/vcap/jobs/mysql/config/my.cnf",
-				"--wsrep-on=OFF",
-				"--wsrep-desync=ON",
-				"--wsrep-OSU-method=RSU",
-				"--wsrep-provider=none",
-				"--skip-networking",
-			}
-			err := helper.StartMysqldInStandAlone()
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(fakeOs.StartCommandCallCount()).To(Equal(1))
-			logFile, executable, args := fakeOs.StartCommandArgsForCall(0)
-			Expect(logFile).ToNot(BeEmpty())
-			Expect(executable).To(Equal("mysqld"))
-			Expect(args).To(Equal(options))
-		})
-
-		Context("when an error occurs while starting mysqld", func() {
-			It("should return an error", func() {
-				fakeOs.StartCommandStub = func(logfile string, command string, args ...string) (*exec.Cmd, error) {
-					return nil, errors.New("starting somehow failed")
+		Context("when an error occurs while shelling out", func() {
+			It("should panic", func() {
+				fakeOs.RunCommandStub = func(command string, args ...string) (string, error) {
+					return "", errors.New("starting somehow failed")
 				}
 
-				err := helper.StartMysqldInStandAlone()
-				Expect(err).To(MatchError(`Error starting mysqld in stand-alone: starting somehow failed`))
+				Expect(func() { helper.StartMysqldInStandAlone() }).Should(Panic())
 			})
 		})
 	})
 
 	Describe("StopMysqld", func() {
 		It("calls the mysql daemon with the stop command", func() {
-			fakeOs.RunCommandReturns("", nil)
+			statusCommandCallCount := 0
+			fakeOs.RunCommandStub = func(command string, args ...string) (string, error) {
+				if args[1] == mariadb_helper.StatusCommand {
+					if statusCommandCallCount >= 3 {
+						return "", errors.New("error because no process")
+					}
+
+					statusCommandCallCount++
+					return "", nil
+				}
+
+				return "", nil
+			}
 
 			helper.StopMysqld()
 
 			executable, args := fakeOs.RunCommandArgsForCall(0)
-			Expect(executable).To(Equal("mysqladmin"))
-			Expect(args).To(Equal([]string{"--defaults-file=/var/vcap/jobs/mysql/config/mylogin.cnf", "shutdown"}))
+			Expect(executable).To(Equal("bash"))
+			Expect(args).To(Equal([]string{dbConfig.DaemonPath, mariadb_helper.StopCommand}))
+
+			Expect(fakeOs.RunCommandCallCount()).To(Equal(5))
+			Expect(fakeOs.SleepCallCount()).To(Equal(3))
 		})
 
 		Context("when an error occurs", func() {
@@ -174,8 +173,8 @@ var _ = Describe("GaleraDBHelper", func() {
 
 			Expect(fakeOs.RunCommandCallCount()).To(Equal(1))
 			executable, args := fakeOs.RunCommandArgsForCall(0)
-			Expect(executable).To(Equal("mysqladmin"))
-			Expect(args).To(Equal([]string{"--defaults-file=/var/vcap/jobs/mysql/config/mylogin.cnf", "status"}))
+			Expect(executable).To(Equal("bash"))
+			Expect(args).To(Equal([]string{dbConfig.DaemonPath, mariadb_helper.StatusCommand}))
 		})
 
 		It("returns false if `mysql.server status` exits non-zero", func() {
@@ -186,8 +185,8 @@ var _ = Describe("GaleraDBHelper", func() {
 
 			Expect(fakeOs.RunCommandCallCount()).To(Equal(1))
 			executable, args := fakeOs.RunCommandArgsForCall(0)
-			Expect(executable).To(Equal("mysqladmin"))
-			Expect(args).To(Equal([]string{"--defaults-file=/var/vcap/jobs/mysql/config/mylogin.cnf", "status"}))
+			Expect(executable).To(Equal("bash"))
+			Expect(args).To(Equal([]string{dbConfig.DaemonPath, mariadb_helper.StatusCommand}))
 		})
 	})
 
@@ -198,7 +197,9 @@ var _ = Describe("GaleraDBHelper", func() {
 
 			executable, args := fakeOs.RunCommandArgsForCall(0)
 			Expect(executable).To(Equal(dbConfig.UpgradePath))
-			Expect(args).To(Equal([]string{"--defaults-file=/var/vcap/jobs/mysql/config/mylogin.cnf"}))
+			Expect(args).To(Equal([]string{
+				"--defaults-file=/var/vcap/jobs/mysql/config/mylogin.cnf",
+			}))
 		})
 
 		It("returns the output and error", func() {
